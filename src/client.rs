@@ -6,6 +6,7 @@ pub mod hello_world {
 }
 
 use std::convert::TryFrom;
+use std::{thread, time};
 use hello_world::{greeter_client::GreeterClient, HelloRequest};
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -32,7 +33,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = tonic::Request::new(HelloRequest {
         name: "Tonic".into(),
     });
-
     let response = client.say_hello(request).await?;
 
     println!("RESPONSE={:?}", response);
