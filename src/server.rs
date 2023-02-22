@@ -1,99 +1,66 @@
-use tokio::sync::mpsc;
+#![cfg_attr(not(unix), allow(unused_imports))]
+
+use std::path::Path;
+#[cfg(unix)]
+use tokio::net::UnixListener;
+#[cfg(unix)]
+use tokio_stream::wrappers::UnixListenerStream;
+#[cfg(unix)]
+use tonic::transport::server::UdsConnectInfo;
 use tonic::{transport::Server, Request, Response, Status};
 
-use hello::say_server::{Say, SayServer};
-use hello::{SayRequest, SayResponse};
+pub mod hello_world {
+    tonic::include_proto!("helloworld");
+}
 
-mod hello;
+use hello_world::{
+    greeter_server::{Greeter, GreeterServer},
+    HelloReply, HelloRequest,
+};
 
 #[derive(Default)]
 pub struct MyGreeter {}
 
 #[tonic::async_trait]
-impl Say for MyGreeter {
-    type SendStreamStream = mpsc::Receiver<Result<SayResponse, Status>>;
-    async fn send_stream(
+impl Greeter for MyGreeter {
+    async fn say_hello(
         &self,
-        request: Request<SayRequest>,
-    ) -> Result<Response<Self::SendStreamStream>, Status> {
-        println!("Got a request from {:?}", request.remote_addr());
-        let (mut tx, rx) = mpsc::channel(4);
-        tokio::spawn(async move {
-            for _ in 0..4 {
-                tx.send(Ok(SayResponse {
-                    message: format!("hello"),
-                }))
-                .await;
-            }
-        });
-        Ok(Response::new(rx))
-    }
-
-    type BidirectionalStream = mpsc::Receiver<Result<SayResponse, Status>>;
-    async fn bidirectional(
-        &self,
-        request: Request<tonic::Streaming<SayRequest>>,
-    ) -> Result<Response<Self::BidirectionalStream>, Status> {
-        let mut streamer = request.into_inner();
-        let (mut tx, rx) = mpsc::channel(4);
-        tokio::spawn(async move {
-            while let Some(req) = streamer.message().await.unwrap(){
-                tx.send(Ok(SayResponse {
-                    message: format!("hello {}", req.name),
-                }))
-                .await;
-            }
-        });
-        Ok(Response::new(rx))
-    }
-
-    async fn receive_stream(
-        &self,
-        request: Request<tonic::Streaming<SayRequest>>,
-    ) -> Result<Response<SayResponse>, Status> {
-        let mut stream = request.into_inner();
-        let mut message = String::from("");
-        while let Some(req) = stream.message().await? {
-            message.push_str(&format!("Hello {}\n", req.name))
+        request: Request<HelloRequest>,
+    ) -> Result<Response<HelloReply>, Status> {
+        #[cfg(unix)]
+        {
+            let conn_info = request.extensions().get::<UdsConnectInfo>().unwrap();
+            println!("Got a request {:?} with info {:?}", request, conn_info);
         }
-        Ok(Response::new(SayResponse { message }))
-    }
-    async fn send(&self, request: Request<SayRequest>) -> Result<Response<SayResponse>, Status> {
-        Ok(Response::new(SayResponse {
-            message: format!("hello {}", request.get_ref().name),
-        }))
+
+        let reply = hello_world::HelloReply {
+            message: format!("Hello {}!", request.into_inner().name),
+        };
+        Ok(Response::new(reply))
     }
 }
 
-fn interceptor(req:Request<()>)->Result<Request<()>,Status>{
-    let token=match req.metadata().get("authorization"){
-        Some(token)=>token.to_str(),
-        None=>return Err(Status::unauthenticated("Token not found"))
-    };
-    // do some validation with token here ...
-    Ok(req)
-}
-
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse().unwrap();
-    let say = MyGreeter::default();
-    let ser = SayServer::with_interceptor(say,interceptor);
-    let cert = include_str!("../server.pem");
-    let key = include_str!("../server.key");
-    let id = tonic::transport::Identity::from_pem(cert.as_bytes(), key.as_bytes());
+    let path = "/tmp/tonic/helloworld";
 
-    println!("Server listening on {}", addr);
-    let s = include_str!("../my_ca.pem");
-    let ca = tonic::transport::Certificate::from_pem(s.as_bytes());
-    let tls = tonic::transport::ServerTlsConfig::new()
-        .identity(id)
-        .client_ca_root(ca);
+    std::fs::create_dir_all(Path::new(path).parent().unwrap())?;
+
+    let greeter = MyGreeter::default();
+
+    let uds = UnixListener::bind(path)?;
+    let uds_stream = UnixListenerStream::new(uds);
+
     Server::builder()
-        .tls_config(tls)
-        .add_service(ser)
-        .serve(addr)
+        .add_service(GreeterServer::new(greeter))
+        .serve_with_incoming(uds_stream)
         .await?;
 
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn main() {
+    panic!("The `uds` example only works on unix systems!");
 }

@@ -1,68 +1,46 @@
-// use futures::stream::iter;
 
-use hello::say_client::SayClient;
-use hello::SayRequest;
-use tonic::Request;
+#![cfg_attr(not(unix), allow(unused_imports))]
 
-mod hello;
-
-fn get_token() -> String {
-    String::from("token")
+pub mod hello_world {
+    tonic::include_proto!("helloworld");
 }
 
+use std::convert::TryFrom;
+use hello_world::{greeter_client::GreeterClient, HelloRequest};
+#[cfg(unix)]
+use tokio::net::UnixStream;
+use tonic::transport::{Endpoint, Uri};
+use tower::service_fn;
+
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cert=include_str!("../client.pem");
-    let key=include_str!("../client.key");
-    let id=tonic::transport::Identity::from_pem(cert.as_bytes(),key.as_bytes());
-    let s=include_str!("../my_ca.pem");
-    let ca=tonic::transport::Certificate::from_pem(s.as_bytes());
-    let tls=tonic::transport::ClientTlsConfig::new().domain_name("localhost").identity(id).ca_certificate(ca);
-    let channel = tonic::transport::Channel::from_static("http://[::1]:50051")
-        .tls_config(tls)
-        .connect()
+    // We will ignore this uri because uds do not use it
+    // if your connector does use the uri it will be provided
+    // as the request to the `MakeConnection`.
+    let channel = Endpoint::try_from("http://[::]:50051")?
+        .connect_with_connector(service_fn(|_: Uri| {
+            let path = "/tmp/tonic/helloworld";
+
+            // Connect to a Uds socket
+            UnixStream::connect(path)
+        }))
         .await?;
-    let token = get_token();
-    let mut client = SayClient::with_interceptor(channel, move |mut req: Request<()>| {
-        req.metadata_mut().insert(
-            "authorization",
-            tonic::metadata::MetadataValue::from_str(&token).unwrap(),
-        );
-        Ok(req)
+
+    let mut client = GreeterClient::new(channel);
+
+    let request = tonic::Request::new(HelloRequest {
+        name: "Tonic".into(),
     });
-    // let request = tonic::Request::new(iter(vec![
-    //     SayRequest {
-    //        name:String::from("anshul")
-    //     },
-    //     SayRequest {
-    //        name:String::from("anshul")
-    //     },
-    //     SayRequest {
-    //        name:String::from("anshul")
-    //     },
-    // ]));
 
-    // let request = tonic::Request::new(iter(vec![
-    // SayRequest {
-    //     name: String::from("anshul"),
-    // },
-    //     SayRequest {
-    //         name: String::from("rahul"),
-    //     },
-    //     SayRequest {
-    //         name: String::from("vijay"),
-    //     },
-    // ]));
-    let request = tonic::Request::new(SayRequest {
-        name: String::from("anshul"),
-    });
-    let response = client.send(request).await?.into_inner();
+    let response = client.say_hello(request).await?;
 
-    // while let Some(res) = response.message().await? {
-    //     println!("NOTE = {:?}", res);
-    // }
-
-    println!("RESPONSE={}", response.message);
+    println!("RESPONSE={:?}", response);
 
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn main() {
+    panic!("The `uds` example only works on unix systems!");
 }
